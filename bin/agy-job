@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# bin/ entrypoint injected onto OpenCode shell PATH by the plugin (and usable standalone).
+# Forwards to the implementation in ../scripts/agy-job.sh.
+exec "$(cd "$(dirname "$0")/.." && pwd)/scripts/agy-job.sh" "$@"

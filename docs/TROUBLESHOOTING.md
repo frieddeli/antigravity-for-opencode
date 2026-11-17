@@ -1,0 +1,241 @@
+# Troubleshooting
+
+Symptom-first guide to every problem reported so far. **Start by running `agy-doctor`**
+(or `/agy-setup` inside OpenCode) — it diagnoses most of the below and prints
+the plugin version, agy version/auth state, and platform warnings.
+
+---
+
+## "`/scripts/agy-delegate.sh: No such file or directory`" or empty plugin path
+
+**Cause:** a command or older build referenced an unexported `$CLAUDE_PLUGIN_ROOT` path instead of invoking the portable `bin/` entrypoints.
+
+**Fix:** invoke the tools natively (`agy_delegate`, `agy_doctor`, ...) or by bare names (`agy-delegate`,
+`agy-handoff`, `agy-job`, `agy-doctor`, `agy-cost-compare`) on the plugin's `bin/` PATH (injected automatically by `shell.create.before`), and reload OpenCode (`opencode reload`).
+
+---
+
+## Windows: delegation hangs, or exits 12 (TIMEOUT) with a 0-byte log
+
+**Cause (upstream, not the plugin):** on native Windows, headless `agy` needs a real
+console (ConPTY). When the plugin runs it as a child process with redirected stdio there
+is no console, and agy v1.0.x can hard-hang before producing any output
+([#6](https://github.com/yuting0624/antigravity-for-claude-code/issues/6)).
+
+**"But agy works when I type it in my terminal!"** — yes: typed directly, agy has a real
+console (interactive mode). Invoked by the plugin, it runs headless (no console). That's
+the difference, not Windows vs the plugin.
+
+What the plugin does about it: a wall-clock guard (`timeout`/`gtimeout`) turns the hang
+into a clean **TIMEOUT (exit 12)** instead of a freeze, and `agy-doctor` reports "headless
+hang" instead of the misleading "not authenticated".
+
+**Fix: use WSL** (fully supported):
+1. `wsl --install` (one-time; reboot)
+2. Install OpenCode **and** the Antigravity CLI *inside* WSL; authenticate agy there
+   (`agy models` should list models)
+3. Keep your repo on the WSL Linux filesystem (`~/project`), **not** `/mnt/c/...`
+4. Run `/agy-setup` from WSL — it should go green
+
+---
+
+## Everything hangs forever, and `/agy-setup` says the CLI is broken
+
+**Symptom:** `agy models` and every delegation never return. `agy-doctor` reports a hung or
+unauthenticated CLI — but typing `agy models` yourself works fine. macOS and Linux, not just
+Windows.
+
+**Cause:** you have **stdio MCP servers configured** and a plugin build older than 0.22.1
+([#37](https://github.com/yuting0624/antigravity-for-claude-code/issues/37)). agy's stdio MCP
+children **inherit its stdout and outlive agy**. A shell command substitution only returns
+once *every* holder of the pipe's write end closes it, so `OUT="$(agy ...)"` waits forever on
+children that are still alive. The wall-clock guard cannot rescue this: `timeout` kills
+`agy`, not the grandchildren.
+
+The one-line test, from the original report — same machine, only the config changed:
+
+```bash
+# stdout to a FILE — returns in ~6s
+timeout 60 agy -p "Reply with exactly: PONG" > /tmp/out.txt 2>/dev/null </dev/null
+
+# stdout to a PIPE (what the wrappers used to do) — hangs
+timeout 90 bash -c 'O="$(timeout 60 agy -p "Reply with exactly: PONG" 2>/dev/null)"' </dev/null
+```
+
+**Fix: update to 0.22.1 or later.** agy's stdout now goes to a temp file, which children
+inherit harmlessly. Check with `agy-doctor` (it prints the plugin version).
+
+### It still hangs on 0.22.1+
+
+Then it is a **different mechanism**, and one the plugin cannot fix: agy waits on its MCP
+servers at startup, so a server that never finishes connecting blocks `agy` itself — this
+reproduces even with stdout on a file. `agy-doctor` now tells you how many stdio MCP servers
+you have when `agy models` times out.
+
+To confirm, check agy's log (`~/.gemini/antigravity-cli/log/cli-*.log`) for a server that
+never reports ready, or move `~/.gemini/config/mcp_config.json` aside temporarily. Note agy
+loads MCP servers from **two** places — that file and `~/.gemini/config/plugins/*/mcp_config.json`.
+
+## WSL: delegation works but is absurdly slow (20s+ for trivial calls)
+
+**Cause:** your repo lives on a Windows mount (`/mnt/c/...`). agy reads `--dir` workspaces
+over WSL's 9p bridge, which is ~10x slower than native FS.
+
+**Fix:** move the repo into the WSL Linux filesystem (e.g. `~/projects/...`). Both the
+wrapper and `agy-doctor` warn when they detect this.
+
+---
+
+## agy says "done" but wrote no files (or wrote them somewhere else)
+
+**Cause:** write tasks need write permission, and headless agy's no-permission behavior
+has changed across versions. **Your workspace stays untouched every time**; what varies is
+whether the run admits it ([#10](https://github.com/yuting0624/antigravity-for-claude-code/issues/10)):
+- pre-1.1.0: only *describes* the edits
+- 1.1.0–1.1.2: writes to its **own scratch dir** (`~/.gemini/antigravity-cli/scratch/`)
+- 1.1.3–1.1.1x: **soft-denies** — rc 0, empty stdout, a stderr notice naming the allow-rule
+- by **1.1.13** (through 1.1.19): **hard error** — the run fails (rc 1) with `permission check failed for
+  write_file "...": user denied permission for write_file(...)`. Same cause, different
+  shape, and none of the older wording. The wrapper classifies both as **exit 15**; a
+  plugin before 0.24.0 reports the hard one as a bare `agy exited 1` instead
+- **1.1.20 onward: soft again.** agy's changelog stops counting permission denials as run
+  failures. Measured on 1.1.25: rc 0, an empty response (even when the prompt asks for
+  text around the write — agy drops the reply), and on stderr `jetski: no output produced
+  — a tool required the "write_file" permission that headless mode cannot prompt for, so
+  it was auto-denied. Add an allow-rule under permissions.allow in settings.json (e.g.
+  write_file(<target>)). Alternatively, re-run with --dangerously-skip-permissions to
+  auto-approve all tools.` The wrapper's soft-deny route catches it — **exit 15** in both
+  structured and plain-text mode
+- **1.1.27 onward: the envelope names the tool.** `denied_actions: [{"action":"write_file",
+  "display_name":"WriteToFile"}]` alongside the same rc 0 / empty response / notice
+  (measured on 1.2.0). The wrapper reads that first and says `denied: write_file` in its
+  message and in `AGY_SIGNAL`. 1.1.28 also made URL reads ask first, so a fetch without a
+  grant is denied the same way (`read_url`; the narrow rule is `read_url(<target>)`)
+
+**Fix:**
+- **For a file write, add an allow-rule — the narrower fix.** In
+  `~/.gemini/antigravity-cli/settings.json`, under `permissions.allow`, add
+  `write_file(<dir>)`. It matches **recursively beneath `<dir>`** and needs no flag.
+  This is the rule agy's own denial message is naming. Confirmed on agy 1.1.9 by a
+  controlled A/B ([#37](https://github.com/yuting0624/antigravity-for-claude-code/issues/37));
+  a glob form (`write_file(/path/**)`) was reported *not* to match.
+  **Substitute a real path for `<dir>`** — and if the rule is in place and the write is
+  *still* denied, suspect the rule before suspecting agy. An entry agy cannot parse
+  grants nothing on any version, which is exactly this exit 15 with the rule sitting
+  right there in the file. Only one shape of mistake is version-sensitive, and it is not
+  this one: a `command(...)` rule naming no command — `command(time)`, a comment-only
+  entry, `()` — matched **every** command before **1.1.11** and silently auto-approved
+  anything the agent ran. Run `agy-doctor`: it validates each entry and reports the
+  consequence that actually applies to yours.
+- **Or pass `--yolo`** — the wrapper's flag, sent to agy as `--dangerously-skip-permissions`
+  (agy 1.1.25 rejects a literal `--yolo`) — works across all agy versions,
+  but auto-approves **all** tools, not just the write. Required anyway for Vertex AI Search / terminal when no rule covers them (for read-only web / URL research on `agy ≥ 1.4.10`, prefer `--read-only --allow-url` instead of `--yolo`; since agy 1.1.28 URL reads ask first, or add a `read_url(<target>)` rule). (`--mode accept-edits` is version-dependent: on `agy ≥ 1.5.7`, it grants in-workspace `write_file`/`edit_file` while keeping terminal commands gated; on `agy 1.1.13–1.5.6`, `--mode accept-edits` was NOT a headless write grant and denied writes just like a plain call. Earlier notes here said "soft-denied on 1.1.3"; on a build before 1.1.12 where `--mode` was ignored headless, that observation could not tell a denial apart from the flag doing nothing.)
+- OpenCode may prompt for `--dangerously-skip-permissions` depending on your permission rules —
+  approve it, or rely on native `agy_delegate` / `--read-only`.
+- Run write tasks on a **dedicated branch**. `--sandbox` is *not* containment: Measured on macOS with agy 1.1.19: with `--yolo`, `--sandbox` changed nothing — a write to an absolute path OUTSIDE `--dir` succeeded (rc 0), `id` ran and returned a real uid, and `curl https://example.com` returned 200. agy's own help says "terminal restrictions"; whatever it restricts, it is not those, and not in this combination. Not tested on Linux.
+- **Always verify files actually changed in your workspace** (`git status`) — never trust
+  the self-report. The wrapper maps BOTH denial shapes — the soft deny (1.1.3+, and again
+  from 1.1.20; measured on 1.1.25) and the 1.1.13 hard error — to **exit 15**, so you get
+  an actionable message instead of a bare "empty output" or "agy exited 1".
+- Long write tasks can exceed the synchronous shell limit → run them as a
+  background job via `agy_job` (`action="start"`) or `ID=$(agy-job start --tier pro --dir . "<task>")`, then
+  `/agy-status`, `/agy-result <id>`, or `/agy-cancel <id>` (since 0.31.1, `agy-job cancel` terminates the full descendant process tree — measured live on Linux, CI-tested with stubs on macOS `/bin/bash 3.2`, and stub-tested for Windows Git Bash `ps -e` + `taskkill /T /F` from [#117](https://github.com/yuting0624/antigravity-for-claude-code/issues/117); `SIGSTOP` parent-freeze against hand-off respawn and `ps -p` PID-reuse checks apply on POSIX and degrade to top-down `taskkill /T /F` + `kill -0` on Git Bash/BusyBox — and records `state=cancelled`; `agy-job result` exits `2` while running and exits `0` once finished or cancelled, printing `[exit rc=...]` or `[cancelled]` on stderr; interactive sessions only).
+
+---
+
+## Exit codes & `AGY_SIGNAL`
+
+On classifiable failures the wrapper prints a machine-readable line to stderr:
+`AGY_SIGNAL {"status":"...","reason":"...","model":"...","retry":"..."}`
+
+| exit | meaning | what to do |
+|---|---|---|
+| 0 | success | — |
+| 1 | usage error | check flags (`agy-delegate --help`) |
+| 2 | agy failed (unclassified) | read the stderr it relayed |
+| 3 | agy returned empty output | retry; check model availability (`agy models`). Before agy 1.1.18 a dropped agent stream also landed here as a false clean success; from 1.1.18 it exits non-zero (exit 2 here) — per agy's changelog, not reproduced |
+| 4 | verification still failing after the allowed fix-ups (`agy-handoff` only) | read the failing verification output in the report; re-run with a sharper requirement or take over |
+| 6 | a named `--tests` file was modified by the executor (`agy-handoff` only) | reject the result (`git checkout -- <tests>`) and re-run stating why the test is right |
+| 10 | quota / rate limit (incl. Google AI credits, Vertex / Gemini API spend-cap or prepay exhaustion on agy ≥ 1.2.12) | wait or top up credits / raise spend cap, then resume the same conversation with `--continue` |
+| 11 | not authenticated (incl. `"modelProvider": "gemini"` in `settings.json` without `GEMINI_API_KEY`) | run `agy` once interactively (or `agy acp --login` over SSH) to sign in, or export `GEMINI_API_KEY` |
+| 12 | timeout (agy's own, the wall-clock guard, or — agy 1.1.28+ — a `--print-timeout` that expired mid-turn or while waiting on background tasks: agy 1.1.28–1.4.x returns the **partial** reply with rc 0, and agy 1.5.0+ exits 3 with `finished_reason: "print_timeout"` / `AGY_ERROR` `"reason":"print_timeout"`; the wrapper prints any partial reply and exits 12. In `agy-handoff`, exit 12 is returned when an executor call timed out and verification also failed — if the tests pass despite a timed-out turn, `agy-handoff` exits 0. Not a timeout: a complete JSON `SUCCESS` reply after which agy never exits — agy 1.4.4, [antigravity-cli#1313](https://github.com/google-antigravity/antigravity-cli/issues/1313) — is printed, warned about on stderr, and exits 0 once the wall-clock guard kills agy) | raise `--timeout`, narrow the task, or `--continue` the same conversation; on Windows see the hang section above |
+| 13 | agy not on PATH | install the Antigravity CLI |
+| 14 | model unavailable | the `--model` / `tier_*` / `default_model` name isn't in `agy models` or isn't entitled in this plan/project/location (agy ≥ 1.1.2 hard-fails instead of silently downgrading). An **unremapped** `--tier pro`, `--tier flash`, or `--tier flash-lo` (`lite`) automatically resolves plan-entitled fallbacks (`pro`: Carbon → Argon → `Gemini 3.1 Pro` → `Gemini 3.1 Pro (High)` → `Gemini 3.1 Pro (Low)` → Hydrogen → `Gemini 3.8 Flash (High)`; `flash`: Hydrogen → `Gemini 3.8 Flash (High)` → `Gemini 3.7 Flash (High)` → `Gemini 3.6 Flash (High)` → `Gemini 3.5 Flash`; `flash-lo`: Hydrogen Low → `Gemini 3.8 Flash (Low)` → `Gemini 3.5 Flash Lite` → `Gemini 3.7 Flash (Low)` → `Gemini 3.1 Flash Lite`): on `agy 1.5.x` (primary `Gemini 4 Hydrogen (High/Low/XHigh)`, `Gemini 4 Carbon (High/Medium)`, and `Gemini 4 Argon (High)` measured manually on Linux with `agy 1.5.9` via Vertex AI ADC `AGY_ADC_AUTH=true`, alongside the 2-layer OAuth fallback path), it parses `Available models:` from the error output to jump directly to the first entitled candidate in a single retry (or exit 14 immediately if none match), and caches the resolved model for 6 hours in `~/.cache/antigravity-opencode/tier-models-v1.tsv` keyed by `(agy binary stat, OAuth presence bit, settings.json & onboarding.json POSIX cksum, auth env, tier)` (also pre-seeded by `agy-doctor`). Explicit `tier_*` remaps and `--model` never fall back — run `agy models` and fix the name (for Google Workspace accounts missing Gemini 4 under OAuth, see below) |
+| 15 | permission denied | a tool needed permission headless — **both** shapes: the soft deny (rc 0, empty stdout, `auto-denied` on stderr — agy 1.1.3+, and again from 1.1.20, measured on 1.1.25) and 1.1.13's hard error (rc 1, `user denied permission`); since 1.1.27 the tool is also named in the envelope's `denied_actions` (measured on 1.2.0). Add a `permissions.allow` rule covering the target, or pass `--yolo`; if `--yolo` was already passed (`policy_blocked`, agy 1.5.2+), a Gemini Enterprise admin policy or `permissions.deny` rule overrode it — keep targets inside `--dir` or check `agy-doctor` |
+
+---
+
+## exit 15 on a read-only prompt (Gemini 3.8 Flash High + `--digest`)
+
+**Cause:** the digest contract asks for "findings / decisions / errors", and given a
+prompt with nothing to inspect — a bare "reply OK" ping — 3.8 High runs a *command* to
+find something to report. Headless without a grant that is a denial: measured on agy
+1.1.25, 6 of 7 runs (3.7 High 0 of 3, 3.8 Medium 1 of 6, 3.8 High without `--digest`
+0 of 2; rewording the contract to scope tool use changed nothing, 3 of 3). Given a real
+task — a file behind `--dir`, or code pasted into the prompt — 3.8 High answered 6 of 6.
+
+**Fix:** give it a task, or drop `--digest` for a ping. `--yolo` here would grant a
+command the task never needed.
+
+---
+
+## Google Workspace OAuth login only lists ~6 models (no Gemini 4 Hydrogen / Carbon / Argon)
+
+**Symptom:** signing in to `agy` with a Google Workspace account shows only ~6 starter models in `agy models` (`Gemini 3.8 Flash (High/Medium/Low)`, `Claude Sonnet 4.6`, `Claude Opus 4.6`, `GPT-OSS 120B` — no `Gemini 4 Hydrogen`, `Gemini 4 Carbon`, or `Gemini 4 Argon`), even when `~/.gemini/antigravity-cli/settings.json` already configures `"gcp": {"project": "<project>", "location": "global"}` or Google Workspace licenses are assigned.
+
+**Cause** (observed manually on Linux with `agy 1.5.9` by inspecting `antigravity-oauth-token` and CLI logs):
+- Choosing **`1. Google OAuth`** during interactive login stores a consumer OAuth token (`"auth_method": "consumer"` in `~/.gemini/antigravity-cli/antigravity-oauth-token`). Observed on `agy 1.5.9`, consumer OAuth ignores `settings.json`'s `"gcp"` block at runtime (it only pre-fills interactive GCP setup prompts), and Google Workspace accounts cannot subscribe to consumer Google One AI Pro / Ultra plans — so they resolve to Antigravity's starter quota regardless of Google Workspace Admin Console licenses (even Workspace AI add-ons do not unlock Gemini 4 on the consumer OAuth path).
+- Unremapped `--tier flash` / `flash-lo` / `pro` delegations continue to run automatically via the 2-layer fallback (`Gemini 3.8 Flash`), while direct access to primary `Gemini 4 Hydrogen`, `Gemini 4 Carbon`, and `Gemini 4 Argon` requires Google Cloud project auth or Vertex AI ADC.
+
+**Fix** (pick either — no Google Workspace Admin Console change needed):
+1. **Persistent OAuth login bound to a Google Cloud project (no env vars needed):** run `agy` interactively, run `/logout`, and sign back in selecting **`2. Use a Google Cloud project`** → **`1. Continue with Google Cloud`** → **`2. Pay As You Go`** (bills Vertex AI usage directly to your Google Cloud project; no seat license required) or **`1. Subscriptions`** (if your account holds an active Google Cloud **Gemini Enterprise** license; legacy Gemini Code Assist Standard/Enterprise SKUs do not entitle Antigravity). Confirm your project ID and `global` location — this saves `"auth_method": "gcp"` in `antigravity-oauth-token`.
+2. **Headless / VM / SSH via Vertex AI Application Default Credentials (`AGY_ADC_AUTH=true`):** authenticate ADC (`gcloud auth application-default login`, or attach a VM service account with Vertex AI access) and export in your shell profile (`~/.bashrc` / `~/.zshrc`):
+   ```bash
+   export AGY_ADC_AUTH=true
+   export GOOGLE_CLOUD_PROJECT=<your-gcp-project-id>
+   export GOOGLE_CLOUD_LOCATION=global
+   ```
+   Measured manually on Linux with `agy 1.5.9`: `AGY_ADC_AUTH=true` exposes the full 33-model Vertex catalog directly (`Gemini 4 Hydrogen (High/Low/XHigh)`, `Gemini 4 Carbon (High/Medium/Low)`, `Gemini 4 Argon (High/Medium/Low)`), and `~/.cache/antigravity-opencode/tier-models-v1.tsv` isolates ADC and OAuth cache keys automatically.
+
+---
+
+## "tier model not in `agy models`" warning from doctor
+
+**Cause:** agy's model list is plan-dependent (e.g. Google AI Ultra vs Google AI Pro vs Free vs Vertex/API-key; some plans expose Claude/GPT). When a tier is **unremapped** (`tier_flash`, `tier_flash_lo`, `tier_pro` left empty), `agy-doctor` checks its built-in fallback chain, reports `ok` if any fallback model is in `agy models`, and pre-seeds `~/.cache/antigravity-opencode/tier-models-v1.tsv` so `agy-delegate` skips cold-miss retries. You only see a `warn` if you explicitly set a `tier_*` / `default_model` name that isn't in `agy models`, or if none of the primary or fallback models are available on your plan.
+
+**Fix:** remap tiers to models you actually have — plugin options `tier_flash` /
+`tier_flash_lo` / `tier_pro` or `default_model` (exact names from `agy models`), or pass
+`--model "<exact name>"` per call.
+
+---
+
+## Output is huge / "looks like a raw dump, not a digest"
+
+**Cause:** the wrapper warns (stderr) when a reply exceeds `digest_warn_chars` (default
+8000). Ingesting raw dumps into the conductor's context is where the cost savings die.
+
+**Fix:** re-run with `--digest` (appends a digest-only output contract to the prompt), or
+have agy summarize before you ingest. Tune the threshold via the `digest_warn_chars`
+plugin option; `0` disables the warning.
+
+---
+
+## Updating / checking your version
+
+Third-party marketplace plugins do **not** auto-update by default:
+
+```
+/plugin marketplace update antigravity-for-claude-code
+/reload-plugins
+```
+
+`agy-doctor` prints the installed plugin version (last line of its checks). Fixes land as
+version bumps — see [CHANGELOG.md](../CHANGELOG.md).
+
+---
+
+## Still stuck?
+
+[Open a bug report](https://github.com/yuting0624/antigravity-for-claude-code/issues/new/choose)
+— the template asks for your `agy-doctor` output, OS, and install method, which is
+usually everything needed to diagnose in one round-trip.

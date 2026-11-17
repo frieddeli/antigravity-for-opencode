@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# bin/ entrypoint injected onto OpenCode shell PATH by the plugin (and usable standalone).
+# Forwards to the implementation in ../scripts/measure-session.py.
+exec "$(cd "$(dirname "$0")/.." && pwd)/scripts/measure-session.py" "$@"

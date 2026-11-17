@@ -1,0 +1,18 @@
+---
+description: Get an independent cross-model review of the current diff from Antigravity (Gemini), then reconcile as the final judge.
+argument-hint: "[--adversarial] [scope: paths or git range]"
+---
+
+Use Antigravity (`agy` / Gemini) as an **independent, different-model reviewer** of the
+current changes, then reconcile the findings yourself (you are the final judge).
+
+Scope/flags: $ARGUMENTS
+
+Do this:
+1. Capture the diff: `git diff` (or the range/paths in the scope above; default to
+   uncommitted + last commit if unspecified).
+2. Delegate the review to agy (`pro` tier = Gemini 4 Carbon High, falling back automatically on plans without Carbon) — pipe the diff in on stdin via `shell` (`git diff | agy-delegate --read-only --tier pro -`) OR pass `stdin` to the `agy_delegate` tool (`readOnly: true, tier: "pro"`).
+   (Note: the `antigravity-delegate` subagent cannot run shell pipelines because its `execute.before` gate blocks all pipes; if delegating to the subagent, have it pass `--read-only --dir .` instead.)
+   Instruct agy to find correctness/security/performance bugs, be skeptical, and list each as `file:line — issue`. If `--adversarial` is set, also have it challenge design decisions and tradeoffs.
+3. **Reconcile**: for each finding, corroborate it against the actual code. Drop false positives; keep what's real. Agreement across two model families is a stronger signal; disagreement is a prompt to look closer.
+4. Report the reconciled findings (most severe first) and your verdict.
