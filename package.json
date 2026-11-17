@@ -4,6 +4,22 @@
   "description": "Run the Antigravity CLI (agy / Gemini) as a collaborating sub-agent inside OpenCode V2, with intelligent model routing, cost discipline, background jobs, handoff verification, media digests, and Cloud Run log diagnosis.",
   "type": "module",
   "license": "MIT",
+  "author": "Yuting Lin <32728916+yuting0624@users.noreply.github.com> (https://github.com/yuting0624)",
+  "contributors": [
+    {
+      "name": "Yuting Lin (linyuting)",
+      "url": "https://github.com/yuting0624"
+    },
+    {
+      "name": "Ray (frieddeli)",
+      "url": "https://github.com/frieddeli"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frieddeli/antigravity-for-opencode.git"
+  },
+  "homepage": "https://github.com/frieddeli/antigravity-for-opencode#readme",
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",

@@ -2,7 +2,7 @@
 
 OpenCode V2 plugin that connects OpenCode (conductor) with the Google Antigravity CLI (`agy`, executor) for cost-aware delegation, test-gated autonomous hand-offs, multimodal media digests, background job orchestration, and Cloud Run log triage.
 
-Ported from [yuting0624/antigravity-for-claude-code](https://github.com/yuting0624/antigravity-for-claude-code) for OpenCode V2 (`@opencode/plugin`).
+Ported from [**yuting0624/antigravity-for-claude-code**](https://github.com/yuting0624/antigravity-for-claude-code) by **Yuting Lin ([@yuting0624](https://github.com/yuting0624))** for OpenCode V2 (`@opencode/plugin`).
 
 ## Why Delegate to Antigravity?
 
@@ -22,7 +22,7 @@ Ported from [yuting0624/antigravity-for-claude-code](https://github.com/yuting06
 1. Clone or place this repository locally and install Node dependencies:
 
 ```bash
-git clone <repo-url> ~/devp/antigravity-for-opencode
+git clone https://github.com/frieddeli/antigravity-for-opencode.git ~/devp/antigravity-for-opencode
 cd ~/devp/antigravity-for-opencode
 npm install
 ```
@@ -160,3 +160,11 @@ node --test tests/plugin.test.ts
 # Full wrapper, guardrail, doctor, handoff, job, cost, and contract test suite
 bash tests/run-tests.sh
 ```
+
+## Credits & License
+
+- **Original Author & Upstream Project:** **Yuting Lin ([@yuting0624](https://github.com/yuting0624) / `linyuting`)** — author of [yuting0624/antigravity-for-claude-code](https://github.com/yuting0624/antigravity-for-claude-code), which created the routing architecture, shell wrappers, hand-off verification contract, cost discipline, benchmarks ([`docs/AB-RESULTS.md`](docs/AB-RESULTS.md)), diagnostics, and security guardrails.
+- **OpenCode V2 Port:** [frieddeli](https://github.com/frieddeli) — [frieddeli/antigravity-for-opencode](https://github.com/frieddeli/antigravity-for-opencode).
+- **License:** MIT — see [`LICENSE`](LICENSE) (`Copyright (c) 2026 linyuting`).
+- **Disclaimer:** Community project, not affiliated with, endorsed by, or supported by Google, Anthropic, or OpenCode. "Antigravity", "Gemini", and "OpenCode" are trademarks of their respective owners.
+
